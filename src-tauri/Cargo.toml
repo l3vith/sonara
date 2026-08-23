@@ -1,0 +1,42 @@
+[package]
+name = "sonora"
+version = "0.1.0"
+description = "P2P lossless listening rooms"
+authors = ["Sonora"]
+edition = "2021"
+
+[lib]
+name = "sonora_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
+iroh = "1"
+n0-error = "0.1"
+anyhow = "1"
+blake3 = "1"
+rand = "0.8"
+bytes = "1"
+cpal = "0.15"
+ringbuf = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+parking_lot = "0.12"
+xcap = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = "8"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wasapi = "0.19"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = { version = "0.9", optional = true }
