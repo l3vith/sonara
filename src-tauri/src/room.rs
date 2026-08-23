@@ -6,12 +6,30 @@ use bytes::Bytes;
 use iroh::{endpoint::presets, Endpoint, EndpointAddr};
 use parking_lot::Mutex;
 use serde::Serialize;
+use std::fs::{self, File};
+use std::io::Write;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast;
+
+#[derive(Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomDiagnostics {
+    pub capture_frames: u64,
+    pub capture_bytes: u64,
+    pub encoded_frames: u64,
+    pub encoded_bytes: u64,
+    pub outgoing_lag_events: u64,
+    pub received_frames: u64,
+    pub received_bytes: u64,
+    pub late_frames: u64,
+    pub max_arrival_gap_ms: u64,
+    pub playback_buffered_ms: u64,
+    pub playback_underruns: u64,
+}
 
 #[derive(Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +45,7 @@ pub struct RoomSnapshot {
     pub host_name: Option<String>,
     pub lossless: String,
     pub stream_quality: String,
+    pub diagnostics: RoomDiagnostics,
 }
 
 impl RoomSnapshot {
@@ -44,6 +63,7 @@ impl RoomSnapshot {
 
 pub struct AppState {
     pub snapshot: Mutex<RoomSnapshot>,
+    diagnostics_log: Mutex<Option<File>>,
     inner: tokio::sync::Mutex<Option<LiveSession>>,
 }
 
@@ -69,8 +89,36 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             snapshot: Mutex::new(RoomSnapshot::idle()),
+            diagnostics_log: Mutex::new(None),
             inner: tokio::sync::Mutex::new(None),
         }
+    }
+}
+
+pub fn set_diagnostics_logging(app: &AppHandle, state: &AppState, enabled: bool) -> Result<Option<String>, String> {
+    let mut log = state.diagnostics_log.lock();
+    if !enabled {
+        *log = None;
+        return Ok(None);
+    }
+    let directory = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    let path = directory.join(format!("sonora-diagnostics-{}.log", chrono_free_timestamp()));
+    let mut file = File::create(&path).map_err(|e| e.to_string())?;
+    writeln!(file, "Sonora diagnostics started\n").map_err(|e| e.to_string())?;
+    *log = Some(file);
+    Ok(Some(path.display().to_string()))
+}
+
+fn chrono_free_timestamp() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() }
+
+fn write_diagnostics(state: &AppState, event: &str) {
+    let snapshot = state.snapshot.lock().clone();
+    if let Some(file) = state.diagnostics_log.lock().as_mut() {
+        let _ = writeln!(file, "{} {}", chrono_free_timestamp(), event);
+        let _ = serde_json::to_writer(&mut *file, &snapshot);
+        let _ = writeln!(file);
+        let _ = file.flush();
     }
 }
 
@@ -144,6 +192,7 @@ pub async fn host_room(
             host_name: Some(display_name.clone()),
             lossless: "16-bit · 48 kHz stereo PCM".into(),
             stream_quality: quality.lock().label().into(),
+            diagnostics: RoomDiagnostics::default(),
         };
         emit(&app, &snap);
     }
@@ -159,6 +208,7 @@ pub async fn host_room(
     let pump = tokio::task::spawn_blocking(move || {
         let mut source_label = initial_source_label;
         let mut last_source_check = Instant::now();
+        let mut last_diagnostics_log = Instant::now();
         while !*sd.borrow() {
             match pcm_rx.recv_timeout(Duration::from_millis(80)) {
                 Ok(chunk) => {
@@ -170,12 +220,32 @@ pub async fn host_room(
                         let mut s = snap_state.snapshot.lock();
                         s.level = lvl;
                         s.path = "live".into();
+                        s.diagnostics.capture_frames += 1;
+                        s.diagnostics.capture_bytes += (chunk.samples.len() * std::mem::size_of::<i16>()) as u64;
                     }
                     let _ = app2.emit("room-state", snap_state.snapshot.lock().clone());
                     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
                     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let framed = protocol::encode_audio_frame(seq, sample_rate, &samples);
+                    {
+                        let mut s = snap_state.snapshot.lock();
+                        s.diagnostics.encoded_frames += 1;
+                        s.diagnostics.encoded_bytes += framed.len() as u64;
+                    }
                     let _ = audio_tx2.send(Bytes::from(framed));
+                    if last_diagnostics_log.elapsed() >= Duration::from_secs(1) {
+                        last_diagnostics_log = Instant::now();
+                        let diagnostics = snap_state.snapshot.lock().diagnostics.clone();
+                        tracing::info!(
+                            capture_frames = diagnostics.capture_frames,
+                            capture_bytes = diagnostics.capture_bytes,
+                            encoded_frames = diagnostics.encoded_frames,
+                            encoded_bytes = diagnostics.encoded_bytes,
+                            outgoing_lag_events = diagnostics.outgoing_lag_events,
+                            "audio host diagnostics"
+                        );
+                        write_diagnostics(&snap_state, "host-sample");
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -311,12 +381,16 @@ async fn serve_listener(
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {
                     let mut setting = quality.lock();
+                    let mut snapshot = state.snapshot.lock();
+                    snapshot.diagnostics.outgoing_lag_events += 1;
+                    tracing::warn!(listener = %name, lag_events = snapshot.diagnostics.outgoing_lag_events, "audio sender fell behind");
                     if *setting == StreamQuality::Auto {
                         *setting = StreamQuality::Balanced;
-                        let mut snapshot = state.snapshot.lock();
                         snapshot.stream_quality = "Auto · balanced for this connection".into();
-                        emit(&app, &snapshot);
                     }
+                    emit(&app, &snapshot);
+                    drop(snapshot);
+                    write_diagnostics(&state, "outgoing-lag");
                     continue;
                 },
                 Err(broadcast::error::RecvError::Closed) => break,
@@ -397,6 +471,7 @@ pub async fn join_room(
             host_name: None,
             lossless: "16-bit · 48 kHz stereo PCM".into(),
             stream_quality: "Auto".into(),
+            diagnostics: RoomDiagnostics::default(),
         };
         emit(&app, &snap);
     }
@@ -471,6 +546,8 @@ pub async fn join_room(
     let app3 = app.clone();
     let mut sd2 = shutdown.subscribe();
     let audio_task = tokio::spawn(async move {
+        let mut last_frame_at: Option<Instant> = None;
+        let mut last_diagnostics_log = Instant::now();
         let mut audio = match conn.accept_uni().await {
             Ok(s) => s,
             Err(e) => {
@@ -489,13 +566,38 @@ pub async fn join_room(
                         Ok(buf) => {
                             if let Some((_seq, sample_rate, pcm)) = protocol::decode_audio_frame(&buf) {
                                 let lvl = rms_level(&pcm);
+                                let now = Instant::now();
                                 {
                                     let mut s = state3.snapshot.lock();
                                     s.level = lvl;
                                     s.status = "live".into();
+                                    s.diagnostics.received_frames += 1;
+                                    s.diagnostics.received_bytes += buf.len() as u64;
+                                    if let Some(previous) = last_frame_at {
+                                        let gap = now.duration_since(previous).as_millis() as u64;
+                                        s.diagnostics.max_arrival_gap_ms = s.diagnostics.max_arrival_gap_ms.max(gap);
+                                        if gap > 50 { s.diagnostics.late_frames += 1; }
+                                    }
+                                    s.diagnostics.playback_buffered_ms = play_audio.buffered_ms();
+                                    s.diagnostics.playback_underruns = play_audio.underruns();
                                 }
+                                last_frame_at = Some(now);
                                 let _ = app3.emit("room-state", state3.snapshot.lock().clone());
                                 play_audio.push_i16(&pcm, sample_rate);
+                                if last_diagnostics_log.elapsed() >= Duration::from_secs(1) {
+                                    last_diagnostics_log = Instant::now();
+                                    let diagnostics = state3.snapshot.lock().diagnostics.clone();
+                                    tracing::info!(
+                                        received_frames = diagnostics.received_frames,
+                                        received_bytes = diagnostics.received_bytes,
+                                        late_frames = diagnostics.late_frames,
+                                        max_arrival_gap_ms = diagnostics.max_arrival_gap_ms,
+                                        playback_buffered_ms = diagnostics.playback_buffered_ms,
+                                        playback_underruns = diagnostics.playback_underruns,
+                                        "audio listener diagnostics"
+                                    );
+                                    write_diagnostics(&state3, "listener-sample");
+                                }
                             }
                         }
                         Err(_) => break,
@@ -532,7 +634,7 @@ pub async fn leave(state: &AppState) {
 pub fn set_volume(state: &AppState, v: f32) {
     if let Ok(guard) = state.inner.try_lock() {
         if let Some(sess) = guard.as_ref() {
-            *sess.volume.lock() = v;
+            *sess.volume.lock() = v.clamp(0.0, 2.0);
             if let Some(p) = sess.playback.as_ref() {
                 p.set_volume(v);
             }

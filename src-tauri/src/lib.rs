@@ -58,6 +58,11 @@ fn set_volume(state: State<Arc<AppState>>, volume: f32) {
     room::set_volume(&state, volume);
 }
 
+#[tauri::command]
+fn set_diagnostics_logging(app: tauri::AppHandle, state: State<Arc<AppState>>, enabled: bool) -> Result<Option<String>, String> {
+    room::set_diagnostics_logging(&app, state.inner(), enabled)
+}
+
 pub fn run() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("sonora=info,iroh=info")
@@ -73,7 +78,8 @@ pub fn run() {
             host_room,
             join_room,
             leave_room,
-            set_volume
+            set_volume,
+            set_diagnostics_logging
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sonora");

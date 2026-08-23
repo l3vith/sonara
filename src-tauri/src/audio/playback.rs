@@ -4,7 +4,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     mpsc, Arc,
 };
 
@@ -14,6 +14,8 @@ pub struct Playback {
     stop: Arc<AtomicBool>,
     volume: Arc<AtomicU32>,
     sender: mpsc::SyncSender<Vec<f32>>,
+    queue: Arc<Mutex<VecDeque<f32>>>,
+    underruns: Arc<AtomicU64>,
 }
 
 impl Playback {
@@ -22,8 +24,12 @@ impl Playback {
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
         let stop = Arc::new(AtomicBool::new(false));
         let volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
+        let queue = Arc::new(Mutex::new(VecDeque::<f32>::new()));
+        let underruns = Arc::new(AtomicU64::new(0));
         let stop_thread = stop.clone();
         let volume_thread = volume.clone();
+        let queue_thread = queue.clone();
+        let underruns_thread = underruns.clone();
         std::thread::spawn(move || {
             let result = (|| -> Result<(), String> {
                 let host = cpal::default_host();
@@ -32,14 +38,15 @@ impl Playback {
                     .ok_or_else(|| "No output device.".to_string())?;
                 let config = device.default_output_config().map_err(|e| e.to_string())?;
                 let out_ch = config.channels() as usize;
-                let queue = Arc::new(Mutex::new(VecDeque::<f32>::new()));
+                let queue = queue_thread;
                 let queue_in = queue.clone();
                 let volume_in = volume_thread.clone();
+                let underruns_in = underruns_thread.clone();
                 let err_fn = |e| tracing::error!("playback: {e}");
                 let stream = match config.sample_format() {
                     cpal::SampleFormat::F32 => device.build_output_stream(
                         &config.into(),
-                        move |out: &mut [f32], _| mix_out(out, out_ch, &queue, &volume_in),
+                        move |out: &mut [f32], _| mix_out(out, out_ch, &queue, &volume_in, &underruns_in),
                         err_fn,
                         None,
                     ),
@@ -47,7 +54,7 @@ impl Playback {
                         &config.into(),
                         move |out: &mut [i16], _| {
                             let mut f = vec![0.0; out.len()];
-                            mix_out(&mut f, out_ch, &queue, &volume_in);
+                            mix_out(&mut f, out_ch, &queue, &volume_in, &underruns_in);
                             for (o, s) in out.iter_mut().zip(f) {
                                 *o = (s * i16::MAX as f32) as i16;
                             }
@@ -85,6 +92,8 @@ impl Playback {
                 stop,
                 volume,
                 sender,
+                queue,
+                underruns,
             }),
             Err(e) => Err(anyhow!(e)),
         }
@@ -92,7 +101,7 @@ impl Playback {
 
     pub fn set_volume(&self, v: f32) {
         self.volume
-            .store(v.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+            .store(v.clamp(0.0, 2.0).to_bits(), Ordering::Relaxed);
     }
     pub fn push_i16(&self, pcm: &[i16], sample_rate: u32) {
         let pcm = crate::audio::to_stream_format(
@@ -105,12 +114,15 @@ impl Playback {
     pub fn stop(&self) {
         self.stop.store(true, Ordering::SeqCst);
     }
+    pub fn buffered_ms(&self) -> u64 { (self.queue.lock().len() as u64 * 1_000) / 96_000 }
+    pub fn underruns(&self) -> u64 { self.underruns.load(Ordering::Relaxed) }
 }
 
-fn mix_out(out: &mut [f32], out_ch: usize, queue: &Mutex<VecDeque<f32>>, volume: &AtomicU32) {
+fn mix_out(out: &mut [f32], out_ch: usize, queue: &Mutex<VecDeque<f32>>, volume: &AtomicU32, underruns: &AtomicU64) {
     let gain = f32::from_bits(volume.load(Ordering::Relaxed));
     let mut q = queue.lock();
     for frame in out.chunks_mut(out_ch.max(1)) {
+        if q.len() < 2 { underruns.fetch_add(1, Ordering::Relaxed); }
         let l = q.pop_front().unwrap_or(0.0) * gain;
         let r = q.pop_front().unwrap_or(l) * gain;
         if frame.len() == 1 {
