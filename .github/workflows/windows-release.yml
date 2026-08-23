@@ -1,0 +1,54 @@
+name: Windows release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-windows:
+    name: Build and release Windows
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and publish Windows installers
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: windows-build-${{ github.run_number }}
+          releaseName: Sonora Windows build ${{ github.run_number }}
+          releaseBody: |
+            Automated Windows build from commit `${{ github.sha }}`.
+
+            Download the `.exe` installer for the simplest setup, or use the `.msi` package for managed Windows installations.
+          releaseDraft: false
+          prerelease: true
+          generateReleaseNotes: true
+          args: --target x86_64-pc-windows-msvc
