@@ -1,4 +1,4 @@
-use crate::audio::{f32_to_i16, to_stream_format, AudioSource, PcmChunk};
+use crate::audio::{f32_to_i16, AudioSource, PcmChunk};
 use anyhow::Result;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -39,6 +39,15 @@ pub fn list_sources() -> Result<Vec<AudioSource>> {
     }
 }
 
+/// Window titles are mutable, so resolve this from the current shareable
+/// content instead of retaining the label selected when the room was opened.
+pub fn source_label(source_id: &str) -> Result<Option<String>> {
+    Ok(list_sources()?
+        .into_iter()
+        .find(|source| source.id == source_id)
+        .map(|source| source.title))
+}
+
 pub fn start(source_id: &str, tx: SyncSender<PcmChunk>) -> Result<CaptureHandle> {
     #[cfg(target_os = "macos")]
     {
@@ -60,13 +69,7 @@ pub fn start(source_id: &str, tx: SyncSender<PcmChunk>) -> Result<CaptureHandle>
 }
 
 pub fn send_chunk(tx: &SyncSender<PcmChunk>, chunk: PcmChunk) {
-    let samples = to_stream_format(&chunk);
-    let framed = PcmChunk {
-        samples,
-        sample_rate: crate::protocol::SAMPLE_RATE,
-        channels: crate::protocol::CHANNELS,
-    };
-    let _ = tx.try_send(framed);
+    let _ = tx.try_send(chunk);
 }
 
 #[allow(dead_code)]

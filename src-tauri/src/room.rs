@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast;
@@ -26,6 +26,7 @@ pub struct RoomSnapshot {
     pub error: Option<String>,
     pub host_name: Option<String>,
     pub lossless: String,
+    pub stream_quality: String,
 }
 
 impl RoomSnapshot {
@@ -35,6 +36,7 @@ impl RoomSnapshot {
             lossless: "16-bit · 48 kHz stereo PCM".into(),
             path: "idle".into(),
             status: "idle".into(),
+            stream_quality: "Auto".into(),
             ..Default::default()
         }
     }
@@ -54,6 +56,15 @@ struct LiveSession {
     volume: Arc<parking_lot::Mutex<f32>>,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum StreamQuality { Auto, High, Balanced, Saver }
+
+impl StreamQuality {
+    fn parse(value: &str) -> Self { match value { "high" => Self::High, "balanced" => Self::Balanced, "saver" => Self::Saver, _ => Self::Auto } }
+    fn sample_rate(self) -> u32 { match self { Self::High | Self::Auto => 48_000, Self::Balanced => 32_000, Self::Saver => 24_000 } }
+    fn label(self) -> &'static str { match self { Self::Auto => "Auto", Self::High => "High · 1.5 Mbps", Self::Balanced => "Balanced · 1.0 Mbps", Self::Saver => "Data saver · 0.75 Mbps" } }
+}
+
 impl AppState {
     pub fn new() -> Self {
         Self {
@@ -65,6 +76,20 @@ impl AppState {
 
 fn emit(app: &AppHandle, snap: &RoomSnapshot) {
     let _ = app.emit("room-state", snap);
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListenerPresence {
+    name: String,
+    action: String,
+}
+
+fn emit_presence(app: &AppHandle, name: String, action: &str) {
+    let _ = app.emit(
+        "listener-presence",
+        ListenerPresence { name, action: action.into() },
+    );
 }
 
 pub fn current_snapshot(state: &AppState) -> RoomSnapshot {
@@ -81,6 +106,7 @@ pub async fn host_room(
     display_name: String,
     source_id: String,
     source_label: String,
+    quality: String,
 ) -> Result<String, String> {
     stop_session(&state).await;
     let code = identity::generate_room_code();
@@ -99,6 +125,8 @@ pub async fn host_room(
 
     let (audio_tx, _) = broadcast::channel::<Bytes>(64);
     let (peers_tx, _) = broadcast::channel::<Vec<String>>(16);
+    let (source_tx, _) = broadcast::channel::<String>(16);
+    let quality = Arc::new(Mutex::new(StreamQuality::parse(&quality)));
     let (shutdown, _) = tokio::sync::watch::channel(false);
     let listeners = Arc::new(Mutex::new(Vec::<String>::new()));
 
@@ -115,6 +143,7 @@ pub async fn host_room(
             error: None,
             host_name: Some(display_name.clone()),
             lossless: "16-bit · 48 kHz stereo PCM".into(),
+            stream_quality: quality.lock().label().into(),
         };
         emit(&app, &snap);
     }
@@ -122,12 +151,21 @@ pub async fn host_room(
     let snap_state = state.clone();
     let app2 = app.clone();
     let audio_tx2 = audio_tx.clone();
+    let source_tx2 = source_tx.clone();
+    let source_id2 = source_id.clone();
+    let initial_source_label = source_label.clone();
+    let quality2 = quality.clone();
     let sd = shutdown.subscribe();
     let pump = tokio::task::spawn_blocking(move || {
+        let mut source_label = initial_source_label;
+        let mut last_source_check = Instant::now();
         while !*sd.borrow() {
             match pcm_rx.recv_timeout(Duration::from_millis(80)) {
                 Ok(chunk) => {
                     let lvl = rms_level(&chunk.samples);
+                    let stream_quality = *quality2.lock();
+                    let sample_rate = stream_quality.sample_rate();
+                    let samples = crate::audio::to_stream_format(&chunk, sample_rate, 2);
                     {
                         let mut s = snap_state.snapshot.lock();
                         s.level = lvl;
@@ -136,11 +174,25 @@ pub async fn host_room(
                     let _ = app2.emit("room-state", snap_state.snapshot.lock().clone());
                     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
                     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let framed = protocol::encode_audio_frame(seq, &chunk.samples);
+                    let framed = protocol::encode_audio_frame(seq, sample_rate, &samples);
                     let _ = audio_tx2.send(Bytes::from(framed));
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            if last_source_check.elapsed() >= Duration::from_millis(750) {
+                last_source_check = Instant::now();
+                if let Ok(Some(updated_label)) = capture::source_label(&source_id2) {
+                    if !updated_label.is_empty() && updated_label != source_label {
+                        source_label = updated_label.clone();
+                        {
+                            let mut snapshot = snap_state.snapshot.lock();
+                            snapshot.source_label = Some(updated_label.clone());
+                            emit(&app2, &snapshot);
+                        }
+                        let _ = source_tx2.send(updated_label);
+                    }
+                }
             }
         }
     });
@@ -149,6 +201,8 @@ pub async fn host_room(
     let mut sd2 = shutdown.subscribe();
     let audio_tx3 = audio_tx.clone();
     let peers_tx3 = peers_tx.clone();
+    let source_tx3 = source_tx.clone();
+    let quality3 = quality.clone();
     let listeners2 = listeners.clone();
     let host_name = display_name.clone();
     let source_label2 = source_label.clone();
@@ -166,13 +220,15 @@ pub async fn host_room(
                     let audio_rx = audio_tx3.subscribe();
                     let peers_rx = peers_tx3.subscribe();
                     let peers_tx = peers_tx3.clone();
+                    let source_rx = source_tx3.subscribe();
+                    let quality = quality3.clone();
                     let listeners = listeners2.clone();
                     let host_name = host_name.clone();
                     let source_label = source_label2.clone();
                     let snap = snap_state2.clone();
                     let app = app3.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = serve_listener(conn, audio_rx, peers_rx, peers_tx, listeners, host_name, source_label, snap, app).await {
+                        if let Err(e) = serve_listener(conn, audio_rx, peers_rx, peers_tx, source_rx, quality, listeners, host_name, source_label, snap, app).await {
                             tracing::warn!("listener session: {e:#}");
                         }
                     });
@@ -198,6 +254,8 @@ async fn serve_listener(
     mut audio_rx: broadcast::Receiver<Bytes>,
     mut peers_rx: broadcast::Receiver<Vec<String>>,
     peers_tx: broadcast::Sender<Vec<String>>,
+    mut source_rx: broadcast::Receiver<String>,
+    quality: Arc<Mutex<StreamQuality>>,
     listeners: Arc<Mutex<Vec<String>>>,
     host_name: String,
     source_label: String,
@@ -220,18 +278,19 @@ async fn serve_listener(
         s.listeners = peer_names.clone();
         emit(&app, &s);
     }
+    emit_presence(&app, name.clone(), "joined");
     let _ = peers_tx.send(peer_names.clone());
     let _registration = ListenerRegistration {
         name: name.clone(),
         listeners,
         peers_tx: peers_tx.clone(),
-        state,
-        app,
+        state: state.clone(),
+        app: app.clone(),
     };
     write_ctrl(
         &mut send,
         &Ctrl::Room {
-            host: host_name,
+            host: host_name.clone(),
             source: source_label,
             rate: protocol::SAMPLE_RATE,
             channels: protocol::CHANNELS,
@@ -250,11 +309,28 @@ async fn serve_listener(
                         .await
                         .context("audio write")?;
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let mut setting = quality.lock();
+                    if *setting == StreamQuality::Auto {
+                        *setting = StreamQuality::Balanced;
+                        let mut snapshot = state.snapshot.lock();
+                        snapshot.stream_quality = "Auto · balanced for this connection".into();
+                        emit(&app, &snapshot);
+                    }
+                    continue;
+                },
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             peers = peers_rx.recv() => match peers {
                 Ok(names) => write_ctrl(&mut send, &Ctrl::Peers { names }).await?,
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            source = source_rx.recv() => match source {
+                Ok(source) => write_ctrl(&mut send, &Ctrl::Room {
+                    host: host_name.clone(), source,
+                    rate: protocol::SAMPLE_RATE, channels: protocol::CHANNELS,
+                }).await?,
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => break,
             },
@@ -284,6 +360,7 @@ impl Drop for ListenerRegistration {
         let mut snapshot = self.state.snapshot.lock();
         snapshot.listeners = peer_names;
         emit(&self.app, &snapshot);
+        emit_presence(&self.app, self.name.clone(), "left");
     }
 }
 
@@ -319,6 +396,7 @@ pub async fn join_room(
             error: None,
             host_name: None,
             lossless: "16-bit · 48 kHz stereo PCM".into(),
+            stream_quality: "Auto".into(),
         };
         emit(&app, &snap);
     }
@@ -374,6 +452,12 @@ pub async fn join_room(
                             s.listeners = names;
                             emit(&app2, &s);
                         }
+                        Ok(Ctrl::Room { host, source, .. }) => {
+                            let mut s = state2.snapshot.lock();
+                            s.host_name = Some(host);
+                            s.source_label = Some(source);
+                            emit(&app2, &s);
+                        }
                         Ok(_) => {}
                         Err(_) => break,
                     }
@@ -403,7 +487,7 @@ pub async fn join_room(
                 frame = read_len_frame(&mut audio) => {
                     match frame {
                         Ok(buf) => {
-                            if let Some((_seq, pcm)) = protocol::decode_audio_frame(&buf) {
+                            if let Some((_seq, sample_rate, pcm)) = protocol::decode_audio_frame(&buf) {
                                 let lvl = rms_level(&pcm);
                                 {
                                     let mut s = state3.snapshot.lock();
@@ -411,7 +495,7 @@ pub async fn join_room(
                                     s.status = "live".into();
                                 }
                                 let _ = app3.emit("room-state", state3.snapshot.lock().clone());
-                                play_audio.push_i16(&pcm);
+                                play_audio.push_i16(&pcm, sample_rate);
                             }
                         }
                         Err(_) => break,

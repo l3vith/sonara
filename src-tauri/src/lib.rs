@@ -24,6 +24,7 @@ async fn host_room(
     display_name: String,
     source_id: String,
     source_label: String,
+    quality: String,
 ) -> Result<String, String> {
     room::host_room(
         app,
@@ -31,6 +32,7 @@ async fn host_room(
         display_name,
         source_id,
         source_label,
+        quality,
     )
     .await
 }

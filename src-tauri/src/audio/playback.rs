@@ -94,8 +94,13 @@ impl Playback {
         self.volume
             .store(v.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
-    pub fn push_i16(&self, pcm: &[i16]) {
-        let _ = self.sender.try_send(i16_to_f32(pcm));
+    pub fn push_i16(&self, pcm: &[i16], sample_rate: u32) {
+        let pcm = crate::audio::to_stream_format(
+            &crate::audio::PcmChunk { samples: pcm.to_vec(), sample_rate, channels: 2 },
+            48_000,
+            2,
+        );
+        let _ = self.sender.try_send(i16_to_f32(&pcm));
     }
     pub fn stop(&self) {
         self.stop.store(true, Ordering::SeqCst);

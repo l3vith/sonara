@@ -46,12 +46,12 @@ pub fn rms_level(samples: &[i16]) -> f32 {
 }
 
 /// Convert interleaved PCM to 48k stereo i16. Linear resample, upmix/downmix.
-pub fn to_stream_format(chunk: &PcmChunk) -> Vec<i16> {
+pub fn to_stream_format(chunk: &PcmChunk, sample_rate: u32, _channels: u16) -> Vec<i16> {
     let stereo = to_stereo(&chunk.samples, chunk.channels);
-    if chunk.sample_rate == crate::protocol::SAMPLE_RATE {
+    if chunk.sample_rate == sample_rate {
         return stereo;
     }
-    resample_linear(&stereo, chunk.sample_rate, crate::protocol::SAMPLE_RATE)
+    resample_linear(&stereo, chunk.sample_rate, sample_rate)
 }
 
 fn to_stereo(samples: &[i16], channels: u16) -> Vec<i16> {
@@ -101,7 +101,7 @@ mod tests {
             sample_rate: 48_000,
             channels: 1,
         };
-        assert_eq!(to_stream_format(&chunk), vec![100, 100, -200, -200]);
+        assert_eq!(to_stream_format(&chunk, 48_000, 2), vec![100, 100, -200, -200]);
     }
 
     #[test]
@@ -111,7 +111,7 @@ mod tests {
             sample_rate: 24_000,
             channels: 2,
         };
-        let output = to_stream_format(&chunk);
+        let output = to_stream_format(&chunk, 48_000, 2);
         assert_eq!(output.len(), 8);
         assert_eq!(&output[..2], &[100, -100]);
     }

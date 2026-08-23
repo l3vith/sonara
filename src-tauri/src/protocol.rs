@@ -24,10 +24,11 @@ pub enum Ctrl {
     },
 }
 
-pub fn encode_audio_frame(seq: u64, pcm: &[i16]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(16 + pcm.len() * 2);
+pub fn encode_audio_frame(seq: u64, rate: u32, pcm: &[i16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(20 + pcm.len() * 2);
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&seq.to_le_bytes());
+    out.extend_from_slice(&rate.to_le_bytes());
     out.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
     for s in pcm {
         out.extend_from_slice(&s.to_le_bytes());
@@ -35,20 +36,21 @@ pub fn encode_audio_frame(seq: u64, pcm: &[i16]) -> Vec<u8> {
     out
 }
 
-pub fn decode_audio_frame(buf: &[u8]) -> Option<(u64, Vec<i16>)> {
-    if buf.len() < 16 || &buf[0..4] != MAGIC {
+pub fn decode_audio_frame(buf: &[u8]) -> Option<(u64, u32, Vec<i16>)> {
+    if buf.len() < 20 || &buf[0..4] != MAGIC {
         return None;
     }
     let seq = u64::from_le_bytes(buf[4..12].try_into().ok()?);
-    let n = u32::from_le_bytes(buf[12..16].try_into().ok()?) as usize;
-    if buf.len() != 16 + n * 2 {
+    let rate = u32::from_le_bytes(buf[12..16].try_into().ok()?);
+    let n = u32::from_le_bytes(buf[16..20].try_into().ok()?) as usize;
+    if rate == 0 || buf.len() != 20 + n * 2 {
         return None;
     }
     let mut pcm = Vec::with_capacity(n);
-    for chunk in buf[16..].chunks_exact(2) {
+    for chunk in buf[20..].chunks_exact(2) {
         pcm.push(i16::from_le_bytes([chunk[0], chunk[1]]));
     }
-    Some((seq, pcm))
+    Some((seq, rate, pcm))
 }
 
 pub fn write_frame(payload: &[u8]) -> Vec<u8> {
@@ -65,14 +67,14 @@ mod tests {
     #[test]
     fn audio_frames_round_trip() {
         let samples = [-32_768, -42, 0, 42, 32_767];
-        let encoded = encode_audio_frame(12, &samples);
-        assert_eq!(decode_audio_frame(&encoded), Some((12, samples.to_vec())));
+        let encoded = encode_audio_frame(12, 48_000, &samples);
+        assert_eq!(decode_audio_frame(&encoded), Some((12, 48_000, samples.to_vec())));
     }
 
     #[test]
     fn malformed_audio_frames_are_rejected() {
         assert_eq!(decode_audio_frame(b"bad"), None);
-        let mut encoded = encode_audio_frame(1, &[1, 2]);
+        let mut encoded = encode_audio_frame(1, 48_000, &[1, 2]);
         encoded.pop();
         assert_eq!(decode_audio_frame(&encoded), None);
     }
