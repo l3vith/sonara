@@ -1,6 +1,7 @@
 use super::{pack_f32, send_chunk, CaptureHandle};
 use crate::audio::{AudioSource, PcmChunk};
 use anyhow::{anyhow, Result};
+use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::SyncSender,
@@ -22,7 +23,9 @@ pub fn list_sources() -> Result<Vec<AudioSource>> {
             if title.is_empty() {
                 continue;
             }
-            let pid = w.pid();
+            let Ok(pid) = w.pid() else {
+                continue;
+            };
             let app = w.app_name().unwrap_or_default();
             out.push(AudioSource {
                 id: format!("app:{pid}"),
@@ -51,13 +54,10 @@ pub fn start(source_id: &str, tx: SyncSender<PcmChunk>) -> Result<CaptureHandle>
 }
 
 fn capture_loop(source_id: &str, tx: SyncSender<PcmChunk>, stop: Arc<AtomicBool>) -> Result<()> {
-    initialize_mta().map_err(|e| anyhow!("{e}"))?;
+    initialize_mta().ok().map_err(|e| anyhow!("{e}"))?;
     let desired = WaveFormat::new(32, 32, &SampleType::Float, 48000, 2, None);
     let mut audio_client = if source_id == "system:default" {
-        let device = DeviceEnumerator::new()
-            .map_err(|e| anyhow!("{e}"))?
-            .get_default_device(&Direction::Render)
-            .map_err(|e| anyhow!("{e}"))?;
+        let device = get_default_device(&Direction::Render).map_err(|e| anyhow!("{e}"))?;
         let mut client = device.get_iaudioclient().map_err(|e| anyhow!("{e}"))?;
         let mode = StreamMode::EventsShared {
             autoconvert: true,
@@ -93,16 +93,8 @@ fn capture_loop(source_id: &str, tx: SyncSender<PcmChunk>, stop: Arc<AtomicBool>
 
     while !stop.load(Ordering::SeqCst) {
         let _ = h_event.wait_for_event(80);
-        let mut data = vec![];
-        let mut frames = 0u32;
-        let mut flags = BufferFlags::empty();
-        if capture_client
-            .read_from_device_to_deque(&mut data, &mut frames, &mut flags)
-            .is_err()
-        {
-            // Fall back to a simpler read if the deque API differs.
-            let _ = frames;
-            let _ = flags;
+        let mut data = VecDeque::new();
+        if capture_client.read_from_device_to_deque(&mut data).is_err() {
             std::thread::sleep(std::time::Duration::from_millis(10));
             continue;
         }
@@ -110,6 +102,7 @@ fn capture_loop(source_id: &str, tx: SyncSender<PcmChunk>, stop: Arc<AtomicBool>
             continue;
         }
         let floats: Vec<f32> = data
+            .make_contiguous()
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
