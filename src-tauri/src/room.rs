@@ -64,6 +64,7 @@ impl RoomSnapshot {
 pub struct AppState {
     pub snapshot: Mutex<RoomSnapshot>,
     diagnostics_log: Mutex<Option<File>>,
+    diagnostics_log_path: Mutex<Option<String>>,
     inner: tokio::sync::Mutex<Option<LiveSession>>,
 }
 
@@ -90,6 +91,7 @@ impl AppState {
         Self {
             snapshot: Mutex::new(RoomSnapshot::idle()),
             diagnostics_log: Mutex::new(None),
+            diagnostics_log_path: Mutex::new(None),
             inner: tokio::sync::Mutex::new(None),
         }
     }
@@ -99,6 +101,7 @@ pub fn set_diagnostics_logging(app: &AppHandle, state: &AppState, enabled: bool)
     let mut log = state.diagnostics_log.lock();
     if !enabled {
         *log = None;
+        *state.diagnostics_log_path.lock() = None;
         return Ok(None);
     }
     let directory = app.path().app_log_dir().map_err(|e| e.to_string())?;
@@ -107,7 +110,13 @@ pub fn set_diagnostics_logging(app: &AppHandle, state: &AppState, enabled: bool)
     let mut file = File::create(&path).map_err(|e| e.to_string())?;
     writeln!(file, "Sonora diagnostics started\n").map_err(|e| e.to_string())?;
     *log = Some(file);
-    Ok(Some(path.display().to_string()))
+    let path = path.display().to_string();
+    *state.diagnostics_log_path.lock() = Some(path.clone());
+    Ok(Some(path))
+}
+
+pub fn diagnostics_log_status(state: &AppState) -> Option<String> {
+    state.diagnostics_log_path.lock().clone()
 }
 
 fn chrono_free_timestamp() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() }
@@ -196,6 +205,7 @@ pub async fn host_room(
         };
         emit(&app, &snap);
     }
+    write_diagnostics(&state, "host-session-started");
 
     let snap_state = state.clone();
     let app2 = app.clone();
@@ -475,6 +485,7 @@ pub async fn join_room(
         };
         emit(&app, &snap);
     }
+    write_diagnostics(&state, "listener-session-started");
 
     let conn = endpoint
         .connect(EndpointAddr::new(host), ALPN)
@@ -626,6 +637,7 @@ fn connection_path(endpoint: &Endpoint, id: iroh::EndpointId) -> String {
 }
 
 pub async fn leave(state: &AppState) {
+    write_diagnostics(state, "session-ending");
     stop_session(state).await;
     let mut s = state.snapshot.lock();
     *s = RoomSnapshot::idle();

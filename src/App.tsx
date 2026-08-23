@@ -26,6 +26,11 @@ if (typeof document !== 'undefined') {
     const button = section.querySelector('button')!;
     const note = section.querySelectorAll('p')[1]!;
     let active = false;
+    void call<string | null>('diagnostics_log_status').then(path => {
+      active = Boolean(path);
+      button.textContent = active ? 'Stop diagnostics log' : 'Start diagnostics log';
+      if (path) note.textContent = `Writing to: ${path}`;
+    });
     button.addEventListener('click', async () => {
       button.setAttribute('disabled', 'true');
       try {

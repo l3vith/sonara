@@ -16,6 +16,7 @@ pub struct Playback {
     sender: mpsc::SyncSender<Vec<f32>>,
     queue: Arc<Mutex<VecDeque<f32>>>,
     underruns: Arc<AtomicU64>,
+    output_sample_rate: Arc<AtomicU32>,
 }
 
 impl Playback {
@@ -26,10 +27,12 @@ impl Playback {
         let volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
         let queue = Arc::new(Mutex::new(VecDeque::<f32>::new()));
         let underruns = Arc::new(AtomicU64::new(0));
+        let output_sample_rate = Arc::new(AtomicU32::new(48_000));
         let stop_thread = stop.clone();
         let volume_thread = volume.clone();
         let queue_thread = queue.clone();
         let underruns_thread = underruns.clone();
+        let output_sample_rate_thread = output_sample_rate.clone();
         std::thread::spawn(move || {
             let result = (|| -> Result<(), String> {
                 let host = cpal::default_host();
@@ -37,6 +40,7 @@ impl Playback {
                     .default_output_device()
                     .ok_or_else(|| "No output device.".to_string())?;
                 let config = device.default_output_config().map_err(|e| e.to_string())?;
+                output_sample_rate_thread.store(config.sample_rate().0, Ordering::Relaxed);
                 let out_ch = config.channels() as usize;
                 let queue = queue_thread;
                 let queue_in = queue.clone();
@@ -94,6 +98,7 @@ impl Playback {
                 sender,
                 queue,
                 underruns,
+                output_sample_rate,
             }),
             Err(e) => Err(anyhow!(e)),
         }
@@ -104,9 +109,10 @@ impl Playback {
             .store(v.clamp(0.0, 2.0).to_bits(), Ordering::Relaxed);
     }
     pub fn push_i16(&self, pcm: &[i16], sample_rate: u32) {
+        let output_sample_rate = self.output_sample_rate.load(Ordering::Relaxed);
         let pcm = crate::audio::to_stream_format(
             &crate::audio::PcmChunk { samples: pcm.to_vec(), sample_rate, channels: 2 },
-            48_000,
+            output_sample_rate,
             2,
         );
         let _ = self.sender.try_send(i16_to_f32(&pcm));
@@ -114,7 +120,10 @@ impl Playback {
     pub fn stop(&self) {
         self.stop.store(true, Ordering::SeqCst);
     }
-    pub fn buffered_ms(&self) -> u64 { (self.queue.lock().len() as u64 * 1_000) / 96_000 }
+    pub fn buffered_ms(&self) -> u64 {
+        let samples_per_second = self.output_sample_rate.load(Ordering::Relaxed).max(1) as u64 * 2;
+        (self.queue.lock().len() as u64 * 1_000) / samples_per_second
+    }
     pub fn underruns(&self) -> u64 { self.underruns.load(Ordering::Relaxed) }
 }
 
