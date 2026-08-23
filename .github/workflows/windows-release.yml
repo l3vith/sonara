@@ -23,6 +23,25 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Determine next release version
+        id: version
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $highestMinor = 5
+          $tags = gh api "repos/${{ github.repository }}/releases?per_page=100" --jq '.[].tag_name'
+
+          foreach ($tag in $tags) {
+            if ($tag -match '^0\.(\d+)$') {
+              $highestMinor = [Math]::Max($highestMinor, [int]$Matches[1])
+            }
+          }
+
+          $nextMinor = $highestMinor + 1
+          "release_version=0.$nextMinor" >> $env:GITHUB_OUTPUT
+          "app_version=0.$nextMinor.0" >> $env:GITHUB_OUTPUT
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -37,18 +56,24 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Set application version
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.version.outputs.app_version }}
+        run: node -e "const fs = require('fs'); const path = 'src-tauri/tauri.conf.json'; const config = JSON.parse(fs.readFileSync(path, 'utf8')); config.version = process.env.APP_VERSION; fs.writeFileSync(path, JSON.stringify(config, null, 2) + '\n');"
+
       - name: Build and publish Windows installers
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: windows-build-${{ github.run_number }}
-          releaseName: Sonora Windows build ${{ github.run_number }}
+          tagName: ${{ steps.version.outputs.release_version }}
+          releaseName: ${{ steps.version.outputs.release_version }}
           releaseBody: |
-            Automated Windows build from commit `${{ github.sha }}`.
+            Sonora ${{ steps.version.outputs.release_version }} for Windows, built automatically from commit `${{ github.sha }}`.
 
             Download the `.exe` installer for the simplest setup, or use the `.msi` package for managed Windows installations.
           releaseDraft: false
-          prerelease: true
+          prerelease: false
           generateReleaseNotes: true
           args: --target x86_64-pc-windows-msvc
