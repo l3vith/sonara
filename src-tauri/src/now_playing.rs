@@ -528,7 +528,9 @@ function run() {
 #[cfg(target_os = "windows")]
 mod platform {
     use super::NowPlaying;
+    use base64::Engine;
     use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
+    use windows::Storage::Streams::DataReader;
 
     pub fn current() -> Option<NowPlaying> {
         let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
@@ -553,8 +555,34 @@ mod platform {
                 .ok()
                 .map(|value| value.to_string())
                 .filter(|value| !value.is_empty()),
-            artwork: None,
+            artwork: thumbnail_data(&properties),
         })
+    }
+
+    fn thumbnail_data(
+        properties: &windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties,
+    ) -> Option<String> {
+        let reference = properties.Thumbnail().ok()?;
+        let stream = reference.OpenReadAsync().ok()?.get().ok()?;
+        let size = stream.Size().ok()?;
+        if size == 0 || size > super::MAX_ARTWORK_BYTES {
+            return None;
+        }
+        let input = stream.GetInputStreamAt(0).ok()?;
+        let reader = DataReader::CreateDataReader(&input).ok()?;
+        reader.LoadAsync(size as u32).ok()?.get().ok()?;
+        let mut bytes = vec![0u8; size as usize];
+        reader.ReadBytes(&mut bytes).ok()?;
+        let mime = match bytes.as_slice() {
+            [0x89, b'P', b'N', b'G', ..] => "image/png",
+            [0xff, 0xd8, 0xff, ..] => "image/jpeg",
+            [b'R', b'I', b'F', b'F', ..] if bytes.get(8..12) == Some(&b"WEBP"[..]) => "image/webp",
+            _ => return None,
+        };
+        Some(format!(
+            "data:{mime};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        ))
     }
 }
 
