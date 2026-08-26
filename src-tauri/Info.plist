@@ -6,5 +6,7 @@
   <string>Sonora captures audio from the window or app you choose so listeners in your room can hear it.</string>
   <key>NSScreenCaptureUsageDescription</key>
   <string>Sonora needs Screen Recording permission to tap audio from a specific window or app — video is not recorded.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Sonora reads the current track from supported music apps so the room can display its title and artwork.</string>
 </dict>
 </plist>

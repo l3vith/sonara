@@ -43,22 +43,25 @@ function useArtworkPalette(track?: NowPlaying) {
     if (!track?.artwork) { setPalette(fallback); return; }
     const image = new Image();
     image.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = 24; canvas.height = 24;
-      const context = canvas.getContext('2d', { willReadFrequently: true });
-      if (!context) { setPalette(fallback); return; }
-      context.drawImage(image, 0, 0, 24, 24);
-      const data = context.getImageData(0, 0, 24, 24).data;
-      let r = 0, g = 0, b = 0, count = 0;
-      for (let index = 0; index < data.length; index += 16) {
-        if (data[index + 3] < 180) continue;
-        r += data[index]; g += data[index + 1]; b += data[index + 2]; count += 1;
-      }
-      if (!count) { setPalette(fallback); return; }
-      r = Math.round(r / count); g = Math.round(g / count); b = Math.round(b / count);
-      setPalette({ base: `rgb(${r} ${g} ${b})`, deep: `rgb(${Math.round(r * .2)} ${Math.round(g * .2)} ${Math.round(b * .2)})`, glow: `rgb(${Math.min(255, Math.round(r * 1.35 + 32))} ${Math.min(255, Math.round(g * 1.35 + 32))} ${Math.min(255, Math.round(b * 1.35 + 32))})` });
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 24; canvas.height = 24;
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        if (!context) { setPalette(fallback); return; }
+        context.drawImage(image, 0, 0, 24, 24);
+        const data = context.getImageData(0, 0, 24, 24).data;
+        let r = 0, g = 0, b = 0, count = 0;
+        for (let index = 0; index < data.length; index += 16) {
+          if (data[index + 3] < 180) continue;
+          r += data[index]; g += data[index + 1]; b += data[index + 2]; count += 1;
+        }
+        if (!count) { setPalette(fallback); return; }
+        r = Math.round(r / count); g = Math.round(g / count); b = Math.round(b / count);
+        setPalette({ base: `rgb(${r} ${g} ${b})`, deep: `rgb(${Math.round(r * .2)} ${Math.round(g * .2)} ${Math.round(b * .2)})`, glow: `rgb(${Math.min(255, Math.round(r * 1.35 + 32))} ${Math.min(255, Math.round(g * 1.35 + 32))} ${Math.min(255, Math.round(b * 1.35 + 32))})` });
+      } catch { setPalette(fallback); }
     };
     image.onerror = () => setPalette(fallback);
+    image.crossOrigin = 'anonymous';
     image.src = track.artwork;
   }, [track?.artwork, track?.artist, track?.title]);
   return palette;

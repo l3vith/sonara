@@ -18,6 +18,9 @@ tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "query", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
 iroh = "1"
 n0-error = "0.1"

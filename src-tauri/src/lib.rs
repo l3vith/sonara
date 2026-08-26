@@ -74,8 +74,11 @@ fn diagnostics_log_status(state: State<Arc<AppState>>) -> Option<String> {
 }
 
 #[tauri::command]
-fn current_now_playing() -> Option<now_playing::NowPlaying> {
-    now_playing::current()
+async fn current_now_playing() -> Option<now_playing::NowPlaying> {
+    tokio::task::spawn_blocking(now_playing::current)
+        .await
+        .ok()
+        .flatten()
 }
 
 pub fn run() {
