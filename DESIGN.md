@@ -1,43 +1,53 @@
-# Design System — Sonora
+# Design System — Sonora Widget
 
-## Theme
-Late-night listening bar: near-black room, cool steel-blue instrument marks, a single tube-filament amber for the act of going live. Product register, restrained strategy. Mood lives in primary + accent, not in a tinted background.
+## Surface
 
-## Colors
-| Token | Value | Role |
-|---|---|---|
-| `--bg` | `oklch(0.10 0 0)` | App canvas |
-| `--surface` | `oklch(0.145 0 0)` | Panels, fields, lists |
-| `--surface-2` | `oklch(0.18 0 0)` | Raised controls, selected rows |
-| `--ink` | `oklch(0.95 0.012 210)` | Body and titles |
-| `--muted` | `oklch(0.68 0.015 210)` | Secondary labels |
-| `--line` | `oklch(0.28 0.01 210)` | Hairline borders |
-| `--primary` | `oklch(0.72 0.09 210)` | Live/path, selection, meters |
-| `--accent` | `oklch(0.78 0.14 72)` | Host / join CTAs |
-| `--danger` | `oklch(0.68 0.18 25)` | Leave, errors |
-| `--on-accent` | `oklch(0.99 0 0)` | Text on accent fills |
-| `--on-primary` | `oklch(0.12 0 0)` | Text on pale primary fills |
+Sonora is a fixed 440×640 desktop listening widget. The window is frameless, non-resizable, fully rounded, and contains every state without page scrolling. Settings and source selection appear as compact glass sheets inside the same frame.
+
+## Visual World
+
+Album artwork is the visual source of truth. Native now-playing artwork fills the background as a blurred color field while a sampled palette supplies the base, deep, and glow colors. When artwork is unavailable, track metadata deterministically creates a music-specific palette and a restrained Sonora artwork tile.
+
+Liquid glass is functional: it separates controls from the artwork-driven field. Glass uses translucent white, backdrop blur, a fine internal highlight, and a soft downward shadow. It is reserved for the action dock, live signal panel, room controls, dialogs, and compact circular actions.
+
+## Color
+
+- `--music-base`: average artwork color or metadata-derived fallback
+- `--music-deep`: darkened artwork color for legibility and the lower field
+- `--music-glow`: lifted artwork color for focus, selection, and the live meter
+- Primary text: white
+- Secondary text: hue-neutral translucent white at 56–78%
+- Live state: pale mint with a visible text label
+- Destructive hover: muted red, used only for window close and leaving a room
 
 ## Typography
-- UI: **IBM Plex Sans** (400/500/600), 14px body, 1.2 scale: 12 / 14 / 16 / 20 / 28
-- Room codes: **IBM Plex Mono** 600, tracked slightly open
-- Wordmark: IBM Plex Sans 500, 20px, no display face in controls
-- Line length for any prose ≤ 65ch
+
+- UI and track metadata: IBM Plex Sans 400/500/600
+- Room codes and room-code input: IBM Plex Mono 600
+- Track title: 26px on home, 24px in a room, maximum tracking −0.025em
+- Controls: 10–14px, concise and action-led
 
 ## Layout
-- Desktop window ~1080×720, min 840×560
-- Home: centered column, max 28rem
-- Host/listen: header + one primary column, no nested cards
-- 8px spacing unit; section gaps 32–48px, not even 24s throughout
 
-## Components
-- Buttons: 36px height, 8px radius, accent fill (white label) or ghost on surface
-- Fields: surface fill, 1px `--line`, focus ring `--primary` 2px
-- Source rows: full-width list, selected = `--surface-2` + primary text, not a card grid
-- Meter: single horizontal energy bar, not a 32-band graphic EQ
-- Toasts/errors: inline under the action, not a modal
+- Outer inset: 14px
+- Window radius: 30px
+- Primary artwork: 226×226px, 24px radius
+- Active-room artwork: 122×122px, 19px radius
+- Action dock stays pinned to the bottom; the artwork region absorbs remaining height
+- No nested navigation, sidebar, or mobile tab bar
 
-## Motion
-- 180ms `cubic-bezier(0.16, 1, 0.3, 1)` on hover/focus/state
-- Meter width is the only continuous motion; freeze under reduced motion
-- No page-load choreography
+## Interaction
+
+- Custom window controls and the brand bar provide drag, minimize, settings, and close
+- Home exposes exactly two primary tasks: start a room or join with a code
+- Host setup preserves source selection and Auto/High/Balanced/Saver quality
+- Active rooms preserve live/path state, lossless format, level meter, room-code copy, listener count, 0–200% listener volume, presence notices, and leave
+- Artwork and palette update every three seconds from the native media session
+- Motion uses 180–700ms exponential ease-out transitions; reduced motion collapses them
+
+## Accessibility
+
+- Every icon button has an accessible name and uses authored SVG icons
+- Focus rings use the artwork glow mixed toward white
+- Status is label plus color; controls remain keyboard operable
+- Text and controls remain inside the fixed frame with no page overflow

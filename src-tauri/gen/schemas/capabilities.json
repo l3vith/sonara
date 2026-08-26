@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Main Sonora window","local":true,"windows":["main"],"permissions":["core:default","core:event:default","core:window:default"]}}
+{"default":{"identifier":"default","description":"Main Sonora window","local":true,"windows":["main"],"permissions":["core:default","core:event:default","core:window:default","core:window:allow-start-dragging","core:window:allow-minimize","core:window:allow-close"]}}

@@ -10,16 +10,22 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Sonora",
-        "width": 1080,
-        "height": 720,
-        "minWidth": 840,
-        "minHeight": 560,
-        "resizable": true,
+        "width": 440,
+        "height": 640,
+        "minWidth": 440,
+        "minHeight": 640,
+        "maxWidth": 440,
+        "maxHeight": 640,
+        "resizable": false,
         "fullscreen": false,
-        "backgroundColor": "#141414"
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "backgroundColor": "#00000000"
       }
     ],
     "security": {

@@ -1,5 +1,6 @@
 mod audio;
 mod identity;
+mod now_playing;
 mod protocol;
 mod room;
 
@@ -59,13 +60,22 @@ fn set_volume(state: State<Arc<AppState>>, volume: f32) {
 }
 
 #[tauri::command]
-fn set_diagnostics_logging(app: tauri::AppHandle, state: State<Arc<AppState>>, enabled: bool) -> Result<Option<String>, String> {
+fn set_diagnostics_logging(
+    app: tauri::AppHandle,
+    state: State<Arc<AppState>>,
+    enabled: bool,
+) -> Result<Option<String>, String> {
     room::set_diagnostics_logging(&app, state.inner(), enabled)
 }
 
 #[tauri::command]
 fn diagnostics_log_status(state: State<Arc<AppState>>) -> Option<String> {
     room::diagnostics_log_status(state.inner())
+}
+
+#[tauri::command]
+fn current_now_playing() -> Option<now_playing::NowPlaying> {
+    now_playing::current()
 }
 
 pub fn run() {
@@ -85,7 +95,8 @@ pub fn run() {
             leave_room,
             set_volume,
             set_diagnostics_logging,
-            diagnostics_log_status
+            diagnostics_log_status,
+            current_now_playing
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sonora");
